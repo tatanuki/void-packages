@@ -1,0 +1,16 @@
+# Template file for 'monkeysphere'
+pkgname=monkeysphere
+version=0.43
+revision=1
+build_style=gnu-makefile
+makedepends="libassuan-devel libgcrypt-devel"
+short_desc="Framework for leveraging PGP for OpenSSH"
+maintainer="tatanuki <tatanuki@disroot.org>"
+license="GPL-3.0"
+homepage="https://github.com/dkg/monkeysphere"
+distfiles="$homepage/archive/refs/tags/monkeysphere_${version}.tar.gz"
+checksum=5f0d39aecda508ac23883f3255d0f43b4c1f596dbcf718f859f64114cdfa3a17
+
+post_extract() {
+	vsed -i  -e 's/sbin/bin/g' Makefile
+}
