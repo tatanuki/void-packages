@@ -1,0 +1,270 @@
+# Template file for 'codium'
+pkgname=codium
+version=1.126.04524
+revision=1
+_electronver=35.7.2
+_npmver=10.8.3
+hostmakedepends="pkg-config python3 python3-setuptools nodejs tar git ripgrep"
+makedepends="ripgrep jq wget pnpm libxkbfile-devel libsecret-devel libxml2-devel mit-krb5-devel nodejs-devel ncurses-devel electron${_electronver%%.*}-devel"
+depends="libXtst ncurses nss xdg-utils ripgrep electron${_electronver%%.*}"
+short_desc="Microsoft Code for Linux"
+maintainer="Baptiste Augrain <daiyam@zokugun.org>"
+license="MIT"
+homepage="https://vscodium.com/"
+distfiles="https://github.com/VSCodium/vscodium/archive/refs/tags/${version}.tar.gz"
+checksum=ea94bcbc80bb8f250ee34fd56deb3348e46cfced68f99080e1224d5d7335f334
+nocross=yes # x64 build does not cut it, it contains native code
+
+if [ "$XBPS_TARGET_WORDSIZE" = "32" ]; then
+	broken="FATAL ERROR: CALL_AND_RETRY_LAST Allocation failed - JavaScript heap out of memory"
+fi
+
+# avoid downloading electron binaries for target platform; we use
+# the system electron, and downloading does not work for all archs
+export ELECTRON_SKIP_BINARY_DOWNLOAD=1
+
+# change some details accordingly
+export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+export VSCODE_SKIP_NODE_VERSION_CHECK=1
+[[ $(uname -m) == arm* ]] && export npm_config_arm_version=7
+app_name=VSCodium
+app_name_lc="${app_name,,}"
+binary=codium
+
+init_sed() {
+	sed_cmd=(sed -i '' -E)
+	sed --version &> /dev/null && sed_cmd=(sed -i -E) # GNU permissive sed
+	sed_patch=("${sed_cmd[@]}" -e "s|!!APP_NAME!!|${app_name}|g" -e "s|!!APP_NAME_LC!!|${app_name_lc}|g" -e "s|!!ASSETS_REPOSITORY!!|${assets_repo}|g" -e "s|!!BINARY_NAME!!|${binary}|g" \
+		-e "s|!!GH_REPO_PATH!!|${gh_repo_path}|g" -e "s|!!GLOBAL_DIRNAME!!|${global_dirname}|g" -e "s|!!ORG_NAME!!|${org_name}|g" -e "s|!!RELEASE_VERSION!!|${version}|g" \
+		-e "s|!!TUNNEL_APP_NAME!!|${binary}-tunnel|g" )
+}
+
+setpath() {
+  local jsonTmp=$( jq "--$1" 'value' "${4}" "setpath(path(.${3}); \$value)" "vscode/${2}.json" )
+  echo "${jsonTmp}" > "vscode/${2}.json"
+}
+
+apply_actions() {
+	local action paths path
+	local -a path_list
+
+	while IFS=$'\t' read -r action paths; do
+		[ "$action" != "remove" ] && continue
+		IFS='|' read -r -a path_list <<< "$paths"
+		for path in "${path_list[@]}"; do
+			if [[ ! -e "vscode/$path" ]]; then
+				echo "Not found: vscode/$path" >&2
+				return 4
+			elif ! rm -rf -- "vscode/$path"; then
+				echo "Failed to remove: vscode/$path" >&2
+				return 4
+			fi
+
+			echo "Removed: vscode/$path"
+		done
+	done < <(jq -r '.[] | [.action, (.paths // [] | join("|"))]| @tsv' "$1")
+}
+
+apply_patch() {
+	[[ -n ${2:-} ]] || echo "applying patch: $1"
+
+	cp -- "$1" "$1.bak" || return 1
+
+	if ! "${sed_patch[@]}" "$1" || ! git -C vscode apply --ignore-whitespace ../"$1"; then
+		mv -f -- "$1.bak" "$1"
+		echo "failed to apply patch $1" >&2
+		return 1
+	fi
+
+	rm -f -- "$1.bak"
+}
+
+dw_vscode() {
+	[ -d vscode ] || mkdir -p vscode
+	#echo "Downloading vscode"
+	#wget -q "https://github.com/microsoft/vscode/archive/$ms_commit.tar.gz" || return $?
+	#echo "Extracting"
+	#tar -zxf "$ms_commit.tar.gz" || return $?
+	#echo "Moving to position"
+	#mv vscode-* vscode || return $?
+	#echo "Removing archive"
+	#rm -rf "$ms_commit.tar.gz" || return $?
+	git -C vscode init
+	git -C vscode init -q
+	git -C vscode remote add origin https://github.com/Microsoft/vscode.git
+	git -C vscode fetch --depth 1 origin "$ms_commit"
+	git -C vscode checkout FETCH_HEAD
+}
+
+remove_telemetry () {
+	local f
+	rg --no-ignore -g '!.git' -g '!.github' -l "${1}" vscode/ | tee >(xargs sed -i -E "s/${1}/0\.0\.0\.0/g") | while read -r f; do
+		echo "found: $f"
+	done
+}
+
+do_configure() {
+	# Read variables
+	local assets_repo=VSCodium/vscodium
+	local gh_repo_path=VSCodium/vscodium
+	local global_dirname="$app_name_lc"
+	local org_name="$app_name"
+	local sed_cmd sed_patch ms_commit ms_tag file
+
+	read -r ms_commit ms_tag < <(jq -r '[.commit, .tag] | @tsv' "upstream/stable.json")
+
+	init_sed
+	dw_vscode
+	[ ! -f "vscode/package-lock.json" ] && echo "error: package-lock.json missing!" >&2 && return 1
+
+	setpath arg "product" "checksumFailMoreInfoUrl" "https://go.microsoft.com/fwlink/?LinkId=828886"
+	setpath arg "product" "documentationUrl" "https://go.microsoft.com/fwlink/?LinkID=533484#vscode"
+	setpath argjson "product" "extensionsGallery" '{"serviceUrl": "https://open-vsx.org/vscode/gallery", "itemUrl": "https://open-vsx.org/vscode/item", "latestUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest", "controlUrl": "https://raw.githubusercontent.com/EclipseFdn/publish-extensions/refs/heads/master/extension-control/extensions.json"}'
+
+	setpath arg "product" "introductoryVideosUrl" "https://go.microsoft.com/fwlink/?linkid=832146"
+	setpath arg "product" "keyboardShortcutsUrlLinux" "https://go.microsoft.com/fwlink/?linkid=832144"
+	setpath arg "product" "keyboardShortcutsUrlMac" "https://go.microsoft.com/fwlink/?linkid=832143"
+	setpath arg "product" "keyboardShortcutsUrlWin" "https://go.microsoft.com/fwlink/?linkid=832145"
+	setpath arg "product" "licenseUrl" "https://github.com/VSCodium/vscodium/blob/master/LICENSE"
+	setpath argjson "product" "linkProtectionTrustedDomains" '["https://open-vsx.org"]'
+	setpath arg "product" "releaseNotesUrl" "https://go.microsoft.com/fwlink/?LinkID=533483#vscode"
+	setpath arg "product" "reportIssueUrl" "https://github.com/VSCodium/vscodium/issues/new"
+	setpath arg "product" "requestFeatureUrl" "https://go.microsoft.com/fwlink/?LinkID=533482"
+	setpath arg "product" "tipsAndTricksUrl" "https://go.microsoft.com/fwlink/?linkid=852118"
+	setpath arg "product" "twitterUrl" "https://go.microsoft.com/fwlink/?LinkID=533687"
+
+	setpath arg "product" "nameShort" "VSCodium"
+	setpath arg "product" "nameLong" "VSCodium"
+	setpath arg "product" "applicationName" "codium"
+	setpath arg "product" "linuxIconName" "vscodium"
+	setpath arg "product" "quality" "stable"
+	setpath arg "product" "urlProtocol" "vscodium"
+	setpath arg "product" "serverApplicationName" "codium-server"
+	setpath arg "product" "serverDataFolderName" ".vscodium-server"
+	setpath arg "product" "darwinBundleIdentifier" "com.vscodium"
+	setpath arg "product" "win32AppUserModelId" "VSCodium.VSCodium"
+	setpath arg "product" "win32DirName" "VSCodium"
+	setpath arg "product" "win32MutexName" "vscodium"
+	setpath arg "product" "win32NameVersion" "VSCodium"
+	setpath arg "product" "win32RegValueName" "VSCodium"
+	setpath arg "product" "win32ShellNameShort" "VSCodium"
+	setpath arg "product" "win32AppId" "{{763CBF88-25C6-4B10-952F-326AE657F16B}"
+	setpath arg "product" "win32x64AppId" "{{88DA3577-054F-4CA1-8122-7D820494CFFB}"
+	setpath arg "product" "win32arm64AppId" "{{67DEE444-3D04-4258-B92A-BC1F0FF2CAE4}"
+	setpath arg "product" "win32UserAppId" "{{0FD05EB4-651E-4E78-A062-515204B47A3A}"
+	setpath arg "product" "win32x64UserAppId" "{{2E1F05D1-C245-4562-81EE-28188DB6FD17}"
+	setpath arg "product" "win32arm64UserAppId" "{{57FD70A5-1B8D-4875-9F40-C5553F094828}"
+	setpath arg "product" "tunnelApplicationName" "codium-tunnel"
+	setpath arg "product" "win32TunnelServiceMutex" "vscodium-tunnelservice"
+	setpath arg "product" "win32TunnelMutex" "vscodium-tunnel"
+	setpath arg "product" "win32ContextMenu.x64.clsid" "D910D5E6-B277-4F4A-BDC5-759A34EEE25D"
+	setpath arg "product" "win32ContextMenu.arm64.clsid" "4852FC55-4A84-4EA1-9C86-D53BE3DF83C0"
+
+
+	setpath arg "resources/server/manifest" "name" "VSCodium"
+	setpath arg "resources/server/manifest" "short_name" "VSCodium"
+	setpath arg "package" "version" "${version}"
+
+
+	for file in patches/*.json; do
+		[[ -f "${file}" ]] || continue
+		apply_actions "${file}" || return "$?"
+	done
+
+	for file in patches/*.patch; do
+		[[ -f "${file}" ]] || continue
+		apply_patch "${file}" || return "$?"
+	done
+
+	for file in patches/linux/*.patch; do
+		[[ -f "${file}" ]] || continue
+		apply_patch "${file}" || return "$?"
+	done
+
+	for file in patches/user/*.patch; do
+		[[ -f "${file}" ]] || continue
+		apply_patch "${file}" || return "$?"
+	done
+
+	"${sed_cmd[@]}" -e "s|\\[\\/\\* BUILTIN_ANNOUNCEMENTS \\*\\/\\]|$( tr -d '\n' < announcements-builtin.json )|" \
+		vscode/src/vs/workbench/contrib/welcomeGettingStarted/browser/gettingStarted.ts
+
+	remove_telemetry "([a-zA-Z0-9_\.]+\.data\.microsoft\.com|dc\.services\.visualstudio\.com)"
+
+	"${sed_cmd[@]}" -e "s|Microsoft Corporation|${app_name}|g" -e "s|([0-9]) Microsoft|\1 ${app_name}|" vscode/build/lib/electron.ts
+
+	"${sed_cmd[@]}" -e 's|Visual Studio Code|VSCodium|g' \
+		-e 's|https://code.visualstudio.com/docs/setup/linux|https://github.com/VSCodium/vscodium#download-install|' \
+		-e 's|https://code.visualstudio.com/home/home-screenshot-linux-lg.png|https://vscodium.com/img/vscodium.png|' \
+		-e 's|https://code.visualstudio.com|https://vscodium.com|' vscode/resources/linux/code.appdata.xml
+
+	# do not checksum electron, since we're using our own build
+	vsed -e "s/validateChecksum: true/validateChecksum: false/g" -i vscode/build/lib/electron.*s
+
+}
+
+do_build() {
+	# Use PNPM for installing NPM to fix some issues because for
+	# this wonderful language we need 3 package managers
+	export PATH="/tmp/.local/share/pnpm/bin:$PATH"
+	pnpm add -g npm@${_npmver}
+
+	# The default memory limit may be too low for current versions of node
+	# to successfully build vscode.  This sets it to 8GB, but
+	# change this number if it still doesn't work for your system.
+	local _mem_limit="--max_old_space_size=9384"
+	export NODE_OPTIONS="${_mem_limit}"
+	export VSCODE_PUBLISH_COUNTER=1
+	export CFLAGS="$CFLAGS -I/usr/include/node"
+
+	# Download packages and prepare build
+	cat npmrc > vscode/.npmrc
+	cd vscode
+	npm ci
+	git checkout HEAD .npmrc
+
+	# Attempt cleaning
+	npm run copy-policy-dto --prefix build
+	node build/lib/policies/policyGenerator.ts build/lib/policies/policyData.jsonc linux
+
+	# Build vscode
+	node_modules/.bin/gulp "${_mem_limit}" --optimize-for-size --series vscode-linux-x64-min
+
+	cd ..
+}
+
+do_install() {
+	vmkdir usr/lib/codium
+	vcopy VSCode-linux-x64/resources usr/lib/codium
+	vcopy VSCode-linux-x64/bin usr/lib/codium
+
+	# Replace statically included binary with system copy
+	ln -sf /usr/bin/rg ${DESTDIR}/usr/lib/codium/resources/app/node_modules/@vscode/ripgrep-universal/bin/linux-x64/rg
+	vmkdir usr/bin
+	ln -sf /usr/lib/codium/bin/codium ${DESTDIR}/usr/bin/
+
+	# Remove code artifacts
+	rm -rf ${DESTDIR}/usr/lib/codium/resources/app/resources/
+	cp src/stable/resources/linux/code.svg ${DESTDIR}/usr/lib/codium/resources/app/out/media/code-icon.svg
+
+	# Dispatch codium application
+	vmkdir usr/share/pixmaps
+	cp src/stable/resources/linux/code.png ${DESTDIR}/usr/share/pixmaps/vscodium.png
+	vmkdir usr/share/icons/hicolor/scalable/apps
+	ln -sf /usr/lib/codium/resources/app/out/media/code-icon.svg ${DESTDIR}/usr/share/icons/hicolor/scalable/apps/vscodium.svg
+	vmkdir usr/share/applications
+	cp src/stable/resources/linux/code.desktop ${DESTDIR}/usr/share/applications/codium.desktop
+	# Fix desktop definition
+	vsed -e "s|@@NAME_LONG@@|${app_name}|g"  -e "s|@@NAME_SHORT@@|${app_name}|g" -e "s|@@EXEC@@|${binary}|g" \
+		-e "s|@@ICON@@|${app_name_lc}|g" -e "s|@@NAME@@|${binary}|g" -i ${DESTDIR}/usr/share/applications/codium.desktop
+
+	# Remove arm64 binaries
+	rm -rf ${DESTDIR}/usr/lib/codium/resources/app/node_modules/@microsoft/mxc-sdk/bin/arm64
+
+	vsed -e "s|ELECTRON=.*|ELECTRON=/usr/lib/electron${_electronver%%.*}/electron|g" \
+		-e 's|"$CLI"|"$CLI" --app="${VSCODE_PATH}/resources/app"|g' \
+		-i "$DESTDIR"/usr/lib/codium/bin/codium
+
+	vlicense LICENSE
+	chmod -R o-w ${DESTDIR}/usr/lib/codium/resources/app/
+}
