@@ -1,0 +1,29 @@
+# Template file for 'forgejo'
+pkgname=forgejo
+version=17.0.1
+revision=1
+build_style=go
+go_import_path=forgejo.org
+go_build_tags="bindata sqlite sqlite_unlock_notify pam"
+go_ldflags="-X 'main.Version=${version}' -X 'main.ReleaseVersion=${version}' -X 'main.ForgejoVersion=${version}' -X 'main.Tags=${go_build_tags}'"
+makedepends="sqlite-devel pam-devel"
+depends="git bash"
+short_desc="Self-hosted lightweight software forge"
+maintainer="Rein <tatanuki@disroot.org>"
+license="GPL-3.0-or-later"
+homepage="https://forgejo.org"
+distfiles="https://codeberg.org/forgejo/forgejo/releases/download/v${version}/forgejo-src-${version}.tar.gz"
+checksum=d6b32ac77e71af0737f30613d985a0dc335b694b8b989d609a0cc88972f2fd4d
+
+system_accounts="_forgejo"
+_forgejo_homedir="/var/lib/forgejo"
+_forgejo_shell="/bin/bash"
+make_dirs="/var/lib/forgejo 0755 _forgejo _forgejo
+ /var/log/forgejo 0755 _forgejo root"
+conf_files="/etc/forgejo.conf"
+
+post_install() {
+	mv "${DESTDIR}"/usr/bin/forgejo{.org,}
+	vsv forgejo
+	vinstall custom/conf/app.example.ini 0640 etc forgejo.conf
+}
